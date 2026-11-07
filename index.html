@@ -67,7 +67,7 @@ const AGENT = 'agent_3601m5c44fzce8sb5rs1jp8g20fr';
 const VAPID = 'BOEZHW9kX6nUZGuWio3_E4gF5Qj-tkdsZkLiqPq6o_zmxPTM_a99JMt39mpTHDEhOq5R7BZo7HUp6M7qv1PtC8Q';
 const $ = id => document.getElementById(id);
 const status = t => $('status').textContent = t;
-let conv = null, ringer = null;
+let conv = null, ringer = null, ringCtx = null;
 
 const reg = 'serviceWorker' in navigator ? navigator.serviceWorker.register('sw.js') : null;
 const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent);
@@ -80,28 +80,30 @@ function ring() {
     const ctx = new AudioContext(); const g = ctx.createGain(); g.connect(ctx.destination); g.gain.value = 0.15;
     const beep = () => { for (const [f, t] of [[880,0],[660,.25],[880,1],[660,1.25]]) {
       const o = ctx.createOscillator(); o.frequency.value = f; o.connect(g); o.start(ctx.currentTime + t); o.stop(ctx.currentTime + t + .2); } };
-    beep(); ringer = setInterval(beep, 3000); ringer.ctx = ctx;
+    ringCtx = ctx; beep(); ringer = setInterval(beep, 3000);
   } catch (_) {}
   if (navigator.vibrate) navigator.vibrate([800,300,800,300,800]);
 }
-function stopRing() { if (ringer) { clearInterval(ringer); ringer.ctx.close(); ringer = null; } if (navigator.vibrate) navigator.vibrate(0); }
+function stopRing() { try { clearInterval(ringer); ringer = null; if (ringCtx) ringCtx.close(); ringCtx = null; if (navigator.vibrate) navigator.vibrate(0); } catch (_) {} }
 
-async function answer() {
+const sdk = import('https://cdn.jsdelivr.net/npm/@elevenlabs/client@1.28.0/+esm');
+let Conversation = null; sdk.then(m => Conversation = m.Conversation).catch(e => console.error(e));
+
+function answer() {
   stopRing(); show('incall'); document.body.className = 'live'; status('Connecting…');
-  try {
-    await navigator.mediaDevices.getUserMedia({audio: true});
-    const { Conversation } = await import('https://cdn.jsdelivr.net/npm/@elevenlabs/client@1.28.0/+esm');
-    conv = await Conversation.startSession({
-      agentId: AGENT,
-      onConnect: () => status('Connected'),
-      onDisconnect: () => endUI('Call ended'),
-      onError: e => status('Problem: ' + (e && e.message || e)),
-      onModeChange: m => { const sp = m.mode === 'speaking'; $('avatar').classList.toggle('speaking', sp); status(sp ? 'Shadow is speaking' : 'Listening…'); }
-    });
-  } catch (e) {
-    status('Could not start the call. Allow the microphone and try again.');
-    show('setup');
-  }
+  // iPhone: unlock audio inside the tap itself, before any waiting.
+  try { const c = new (window.AudioContext || window.webkitAudioContext)(); c.resume(); const o = c.createOscillator(); o.connect(c.destination); o.start(); o.stop(c.currentTime + 0.01); setTimeout(() => c.close(), 500); } catch (_) {}
+  const start = C => C.startSession({
+    agentId: AGENT,
+    connectionType: 'websocket',
+    onConnect: () => status('Connected. Say hi!'),
+    onDisconnect: () => endUI('Call ended'),
+    onError: e => status('Problem: ' + (e && e.message || e)),
+    onModeChange: m => { const sp = m.mode === 'speaking'; $('avatar').classList.toggle('speaking', sp); status(sp ? 'Shadow is speaking' : 'Listening…'); }
+  });
+  (Conversation ? start(Conversation) : sdk.then(m => start(m.Conversation)))
+    .then(c => conv = c)
+    .catch(e => { endUI('Could not start: ' + (e && (e.message || e.name) || e)); });
 }
 function endUI(t) { stopRing(); conv = null; document.body.className = ''; $('avatar').classList.remove('speaking'); status(t); show('setup'); }
 
