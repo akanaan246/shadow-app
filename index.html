@@ -1,0 +1,133 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Shadow</title>
+<link rel="manifest" href="manifest.json">
+<link rel="icon" href="icon.svg">
+<link rel="apple-touch-icon" href="icon.svg">
+<meta name="theme-color" content="#0b0d12">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<style>
+  :root { --bg:#0b0d12; --fg:#f2f4f8; --muted:#8a93a6; --green:#3ddc84; --red:#ff4d4f; --card:#161a22; }
+  * { box-sizing:border-box; }
+  body { margin:0; min-height:100vh; background:var(--bg); color:var(--fg); font:16px/1.5 system-ui,-apple-system,Segoe UI,Roboto,sans-serif;
+         display:flex; flex-direction:column; align-items:center; justify-content:space-between; padding:48px 16px 56px; text-align:center; }
+  .avatar { width:132px; height:132px; border-radius:50%; background:radial-gradient(circle,var(--green) 0 34%,transparent 35%), var(--card);
+            border:6px solid var(--green); margin:24px auto 16px; }
+  .ringing .avatar { animation:pulse 1.2s infinite; }
+  .live .avatar.speaking { animation:pulse .8s infinite; }
+  @keyframes pulse { 0%{box-shadow:0 0 0 0 rgba(61,220,132,.6)} 100%{box-shadow:0 0 0 36px rgba(61,220,132,0)} }
+  h1 { margin:0; font-size:34px; font-weight:600; }
+  .sub { color:var(--muted); margin-top:4px; min-height:24px; }
+  .row { display:flex; gap:56px; justify-content:center; }
+  .btn { width:76px; height:76px; border-radius:50%; border:0; color:#fff; font-size:30px; cursor:pointer; }
+  .btn small { display:block; font-size:13px; margin-top:8px; color:var(--muted); }
+  .green { background:var(--green); } .red { background:var(--red); }
+  .wide { width:100%; max-width:360px; padding:16px; border-radius:14px; border:0; font-size:17px; font-weight:600; background:var(--green); color:#062; cursor:pointer; }
+  .card { background:var(--card); border-radius:14px; padding:16px; max-width:360px; width:100%; text-align:left; color:var(--muted); font-size:15px; }
+  textarea { width:100%; height:90px; margin-top:8px; background:#0b0d12; color:var(--fg); border:1px solid #2a3040; border-radius:8px; font-size:11px; }
+  .hide { display:none !important; }
+  a { color:var(--green); }
+</style>
+</head>
+<body>
+  <div>
+    <div class="avatar" id="avatar"></div>
+    <h1>Shadow</h1>
+    <div class="sub" id="status">Your assistant</div>
+  </div>
+
+  <!-- Setup screen -->
+  <div id="setup" class="card hide">
+    <div id="iosHint" class="hide" style="margin-bottom:12px">On iPhone: tap the Share button, then <b>Add to Home Screen</b>, then open Shadow from your home screen and come back here.</div>
+    <button class="wide" id="enable">Turn on Shadow calls</button>
+    <div id="subBox" class="hide" style="margin-top:12px">
+      Done! Tap <b>Copy</b>, then paste it in the Claude chat so Shadow can ring this phone.
+      <textarea id="sub" readonly></textarea>
+      <button class="wide" id="copy" style="margin-top:8px">Copy</button>
+    </div>
+    <div style="margin-top:12px"><button class="wide" id="callNow" style="background:#2a3040;color:var(--fg)">Call Shadow now</button></div>
+  </div>
+
+  <!-- Incoming call -->
+  <div id="incoming" class="row hide">
+    <div><button class="btn red" id="decline">✕</button><small>Decline</small></div>
+    <div><button class="btn green" id="answer">✆</button><small>Answer</small></div>
+  </div>
+
+  <!-- In call -->
+  <div id="incall" class="row hide">
+    <div><button class="btn red" id="hangup">✕</button><small>Hang up</small></div>
+  </div>
+
+<script type="module">
+const AGENT = 'agent_3601m5c44fzce8sb5rs1jp8g20fr';
+const VAPID = 'BOEZHW9kX6nUZGuWio3_E4gF5Qj-tkdsZkLiqPq6o_zmxPTM_a99JMt39mpTHDEhOq5R7BZo7HUp6M7qv1PtC8Q';
+const $ = id => document.getElementById(id);
+const status = t => $('status').textContent = t;
+let conv = null, ringer = null;
+
+const reg = 'serviceWorker' in navigator ? navigator.serviceWorker.register('sw.js') : null;
+const isIOS = /iphone|ipad|ipod/i.test(navigator.userAgent);
+const standalone = matchMedia('(display-mode: standalone)').matches || navigator.standalone;
+
+function show(id) { for (const x of ['setup','incoming','incall']) $(x).classList.toggle('hide', x !== id); }
+
+function ring() {
+  try {
+    const ctx = new AudioContext(); const g = ctx.createGain(); g.connect(ctx.destination); g.gain.value = 0.15;
+    const beep = () => { for (const [f, t] of [[880,0],[660,.25],[880,1],[660,1.25]]) {
+      const o = ctx.createOscillator(); o.frequency.value = f; o.connect(g); o.start(ctx.currentTime + t); o.stop(ctx.currentTime + t + .2); } };
+    beep(); ringer = setInterval(beep, 3000); ringer.ctx = ctx;
+  } catch (_) {}
+  if (navigator.vibrate) navigator.vibrate([800,300,800,300,800]);
+}
+function stopRing() { if (ringer) { clearInterval(ringer); ringer.ctx.close(); ringer = null; } if (navigator.vibrate) navigator.vibrate(0); }
+
+async function answer() {
+  stopRing(); show('incall'); document.body.className = 'live'; status('Connecting…');
+  try {
+    await navigator.mediaDevices.getUserMedia({audio: true});
+    const { Conversation } = await import('https://cdn.jsdelivr.net/npm/@elevenlabs/client@1.28.0/+esm');
+    conv = await Conversation.startSession({
+      agentId: AGENT,
+      onConnect: () => status('Connected'),
+      onDisconnect: () => endUI('Call ended'),
+      onError: e => status('Problem: ' + (e && e.message || e)),
+      onModeChange: m => { const sp = m.mode === 'speaking'; $('avatar').classList.toggle('speaking', sp); status(sp ? 'Shadow is speaking' : 'Listening…'); }
+    });
+  } catch (e) {
+    status('Could not start the call. Allow the microphone and try again.');
+    show('setup');
+  }
+}
+function endUI(t) { stopRing(); conv = null; document.body.className = ''; $('avatar').classList.remove('speaking'); status(t); show('setup'); }
+
+$('answer').onclick = answer;
+$('callNow').onclick = answer;
+$('decline').onclick = () => endUI('Declined');
+$('hangup').onclick = async () => { if (conv) await conv.endSession(); endUI('Call ended'); };
+
+$('enable').onclick = async () => {
+  try {
+    if (Notification.permission !== 'granted' && await Notification.requestPermission() !== 'granted') { status('Notifications are blocked. Allow them in settings.'); return; }
+    const r = await navigator.serviceWorker.ready;
+    const key = Uint8Array.from(atob(VAPID.replace(/-/g,'+').replace(/_/g,'/')), c => c.charCodeAt(0));
+    const s = await r.pushManager.getSubscription() || await r.pushManager.subscribe({userVisibleOnly: true, applicationServerKey: key});
+    $('sub').value = JSON.stringify(s); $('subBox').classList.remove('hide'); status('Calls are on for this phone');
+  } catch (e) { status('Could not turn on calls: ' + e.message); }
+};
+$('copy').onclick = async () => { $('sub').select(); try { await navigator.clipboard.writeText($('sub').value); } catch (_) { document.execCommand('copy'); } $('copy').textContent = 'Copied ✓'; };
+
+if (new URLSearchParams(location.search).has('call')) {
+  history.replaceState(null, '', './'); show('incoming'); document.body.className = 'ringing'; status('is calling you…'); ring();
+} else {
+  show('setup');
+  if (isIOS && !standalone) $('iosHint').classList.remove('hide');
+  if (!('PushManager' in window)) $('enable').textContent = 'Open from your home screen first';
+}
+</script>
+</body>
+</html>
